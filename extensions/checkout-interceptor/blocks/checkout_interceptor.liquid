@@ -1,0 +1,34 @@
+{% comment %}
+  App Block: Checkout Interceptor
+  
+  HOW TO USE:
+  1. Go to: Shopify Admin > Online Store > Themes > Customize
+  2. In the bottom-left panel, click "App embeds" (puzzle piece icon)
+  3. Toggle "Checkout Interceptor" ON
+  4. In the settings panel, paste your Custom Checkout URL:
+     Dev:  https://<your-tunnel>.trycloudflare.com/public/checkout
+     Prod: https://<your-app-domain>.com/public/checkout
+  5. Save the theme.
+{% endcomment %}
+
+<script>
+  window.__customCheckoutUrl = {{ block.settings.custom_checkout_url | json }};
+  window.__shopifyShop = {{ shop.permanent_domain | json }};
+</script>
+
+<script src="{{ 'checkout-interceptor.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Checkout Interceptor",
+  "target": "body",
+  "settings": [
+    {
+      "type": "text",
+      "id": "custom_checkout_url",
+      "label": "Custom Checkout URL",
+      "info": "Paste the full URL to your custom checkout. Example: https://your-tunnel.trycloudflare.com/public/checkout"
+    }
+  ]
+}
+{% endschema %}

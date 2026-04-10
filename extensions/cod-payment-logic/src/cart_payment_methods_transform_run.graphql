@@ -1,0 +1,18 @@
+query RunInput {
+  cart {
+    cost {
+      totalAmount {
+        amount
+      }
+    }
+  }
+  paymentMethods {
+    id
+    name
+  }
+  paymentCustomization {
+    metafield(namespace: "$app:cod-payment-logic", key: "function-configuration") {
+      value
+    }
+  }
+}
