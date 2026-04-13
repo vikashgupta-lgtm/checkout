@@ -5,6 +5,22 @@ query RunInput {
         amount
       }
     }
+    deliveryGroups {
+      deliveryAddress {
+        zip
+      }
+    }
+    lines {
+      merchandise {
+        ... on ProductVariant {
+          id
+          product {
+            id
+            title
+          }
+        }
+      }
+    }
   }
   paymentMethods {
     id

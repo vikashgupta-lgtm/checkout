@@ -32,3 +32,11 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+model AppConfig {
+  id        Int      @id @default(autoincrement())
+  shop      String   @unique
+  settings  String   // JSON string containing all dashboard config
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
