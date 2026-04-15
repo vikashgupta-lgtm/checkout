@@ -10,6 +10,7 @@
 import { json } from "@remix-run/node";
 import crypto from "crypto";
 import prisma from "../db.server";
+import { sendMetaCAPI } from "../utils/meta.server";
 
 // ── Helper: Format phone number for Shopify ────────────────────────────────
 function formatPhoneNumber(phone) {
@@ -116,6 +117,7 @@ async function handleVerifyAndCreateShopifyOrder(request) {
     paidAmount,
     paymentMethod,
     shop,
+    metaTracking,
   } = body;
 
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
@@ -259,7 +261,34 @@ async function handleVerifyAndCreateShopifyOrder(request) {
       orderName: order.name,          // e.g. "#1001"
       orderStatus: order.financial_status,
       razorpayPaymentId: razorpay_payment_id,
+      // Meta Tracking Data for frontend browser pixel
+      metaData: {
+        eventId: metaTracking?.eventId,
+        totalPrice: order.total_price,
+        currency: order.currency,
+        items: order.line_items
+      }
     });
+
+    // ── Meta CAPI Call ───────────────────────────────────────────────────
+    if (metaTracking?.eventId) {
+      await sendMetaCAPI({
+        orderData: {
+          orderName: order.name,
+          totalPrice: order.total_price,
+          currency: order.currency,
+          items: order.line_items
+        },
+        userData: {
+          email: customerDetails.email,
+          phone: customerDetails.phone
+        },
+        trackingData: metaTracking,
+        request
+      });
+    }
+
+    return response;
   } catch (err) {
     console.error("Shopify order error:", err);
     return json({ error: "Order creation error: " + err.message }, { status: 500 });

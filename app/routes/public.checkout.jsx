@@ -1,5 +1,7 @@
 import { json } from "@remix-run/node";
 import prisma from "../db.server";
+import { sendMetaCAPI } from "../utils/meta.server";
+
 
 import { useLoaderData, Form, useNavigation, useActionData } from "@remix-run/react";
 import { useState, useEffect, useRef } from "react";
@@ -50,9 +52,12 @@ export const loader = async ({ request }) => {
     const { getAppConfig } = await import("../models/config.server");
     const config = await getAppConfig(shop);
 
-    return json({ cart, shop, error: null, razorpayKeyId, config });
+    // Pass Meta Pixel ID to frontend
+    const metaPixelId = process.env.META_PIXEL_ID || "";
+
+    return json({ cart, shop, error: null, razorpayKeyId, config, metaPixelId });
   } catch (err) {
-    return json({ error: "Failed to decode cart: " + err.message, cart: null, shop, config: null });
+    return json({ error: "Failed to decode cart: " + err.message, cart: null, shop, config: null, metaPixelId: "" });
   }
 };
 
@@ -71,6 +76,11 @@ export const action = async ({ request }) => {
   const country = formData.get("country") || "India";
   const cartToken = formData.get("cartToken") || "";
   const shop = formData.get("shop") || "";
+
+  // Meta Tracking Data
+  const fbclid = formData.get("fbclid") || "";
+  const fbp = formData.get("fbp") || "";
+  const eventId = formData.get("eventId") || "";
 
   // ── Create COD order via Shopify Admin API ────────────────────────────────
   console.log(`[Checkout Action] Attempting to create COD order for shop: ${shop}`);
@@ -135,11 +145,29 @@ export const action = async ({ request }) => {
       const data = await res.json();
       if (res.ok) {
         console.log(`[Checkout Action] SUCCESS: Order created: ${data.order.name}`);
+
+        // ── Meta CAPI Call ───────────────────────────────────────────────────
+        if (eventId) {
+          await sendMetaCAPI({
+            orderData: {
+              orderName: data.order.name,
+              totalPrice: data.order.total_price,
+              currency: data.order.currency,
+              items: data.order.line_items
+            },
+            userData: { email, phone },
+            trackingData: { eventId, fbclid, fbp },
+            request
+          });
+        }
+
         return json({
           success: true,
           orderId: data.order.name,
           paymentMethod: "COD",
           name: `${firstName} ${lastName}`,
+          // Pass tracking back to frontend for browser pixel
+          metaData: { eventId, totalPrice: data.order.total_price, currency: data.order.currency, items: data.order.line_items }
         });
       } else {
         console.error(`[Checkout Action] Shopify API Error:`, JSON.stringify(data.errors));
@@ -161,7 +189,7 @@ export const action = async ({ request }) => {
 // ─── UI ──────────────────────────────────────────────────────────────────────
 
 export default function PublicCheckout() {
-  const { cart, shop, error, razorpayKeyId, config } = useLoaderData();
+  const { cart, shop, error, razorpayKeyId, config, metaPixelId } = useLoaderData();
   const actionData = useActionData();
   const nav = useNavigation();
   const isSubmitting = nav.state === "submitting";
@@ -172,16 +200,101 @@ export default function PublicCheckout() {
   const [paymentError, setPaymentError] = useState(null);
   const formRef = useRef(null);
 
-  // ── Load Razorpay SDK from CDN ───────────────────────────────────────────
+  // ── Address Selection State ─────────────────────────────────────────────
+  const [savedAddresses, setSavedAddresses] = useState([]);
+  const [selectedAddressIndex, setSelectedAddressIndex] = useState(-1);
+  const [addressView, setAddressView] = useState("form"); // form, list, summary
+
+  // Load addresses from localStorage on mount
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("saved_addresses");
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          if (parsed && parsed.length > 0) {
+            setSavedAddresses(parsed);
+            setSelectedAddressIndex(0);
+            setAddressView("summary");
+          }
+        } catch (e) {
+          console.error("Failed to parse saved addresses", e);
+        }
+      } else {
+        setAddressView("form");
+      }
+    }
+  }, []);
+
+  // Save changes to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined" && savedAddresses.length > 0) {
+      localStorage.setItem("saved_addresses", JSON.stringify(savedAddresses));
+    }
+  }, [savedAddresses]);
+
+  const selectedAddress = selectedAddressIndex >= 0 ? savedAddresses[selectedAddressIndex] : null;
+
+  // ── Meta Pixel & Tracking IDs ───────────────────────────────────────────
+  const eventIdRef = useRef(`evt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
+  const [fbclid, setFbclid] = useState("");
+  const [fbp, setFbp] = useState("");
+
   useEffect(() => {
     if (typeof window === "undefined") return;
+
+    // Capture fbclid from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const cid = urlParams.get("fbclid");
+    if (cid) setFbclid(cid);
+
+    // Capture fbp from cookie
+    const getCookie = (name) => {
+      const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+      return match ? match[2] : null;
+    };
+    const fbpCookie = getCookie("_fbp");
+    if (fbpCookie) setFbp(fbpCookie);
+
+    // Meta Pixel Base Script
+    if (metaPixelId && !window.fbq) {
+      !function (f, b, e, v, n, t, s) {
+        if (f.fbq) return; n = f.fbq = function () {
+          n.callMethod ?
+            n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+        }; if (!f._fbq) f._fbq = n;
+        n.push = n; n.loaded = !0; n.version = '2.0'; n.queue = []; t = b.createElement(e); t.async = !0;
+        t.src = v; s = b.getElementsByTagName(e)[0]; s.parentNode.insertBefore(t, s)
+      }(window,
+        document, 'script', 'https://connect.facebook.net/en_US/fbevents.js');
+      fbq('init', metaPixelId);
+      fbq('track', 'PageView');
+    }
+
+    // Razorpay SDK
     if (document.getElementById("razorpay-script")) return;
     const script = document.createElement("script");
     script.id = "razorpay-script";
     script.src = "https://checkout.razorpay.com/v1/checkout.js";
     script.async = true;
     document.head.appendChild(script);
-  }, []);
+  }, [metaPixelId]);
+
+  // ── Fire Browser Pixel on Success ────────────────────────────────────────
+  useEffect(() => {
+    const successData = actionData?.success ? actionData : orderResult?.success ? orderResult : null;
+    if (successData && window.fbq && successData.metaData) {
+      const { eventId, totalPrice, currency, items } = successData.metaData;
+      fbq('track', 'Purchase', {
+        value: parseFloat(totalPrice),
+        currency: currency || 'INR',
+        content_type: 'product',
+        content_ids: items.map(i => i.variant_id.toString()),
+        num_items: items.reduce((acc, i) => acc + i.quantity, 0)
+      }, { eventID: eventId });
+      console.log("[Meta Pixel] Purchase event fired:", eventId);
+    }
+  }, [actionData, orderResult]);
 
   if (error) return <ErrorScreen message={error} />;
   if (!cart) return <ErrorScreen message="Cart not found. Please go back and try again." />;
@@ -284,6 +397,12 @@ export default function PublicCheckout() {
                 paidAmount: amountToPay,
                 paymentMethod: paymentMethod,
                 shop,
+                // Pass tracking data for CAPI
+                metaTracking: {
+                  fbclid,
+                  fbp,
+                  eventId: eventIdRef.current
+                }
               }),
             });
 
@@ -298,6 +417,7 @@ export default function PublicCheckout() {
               paymentMethod: paymentMethod,
               name: `${firstName} ${lastName}`,
               razorpayPaymentId: verifyData.razorpayPaymentId,
+              metaData: verifyData.metaData // Pass tracking back for browser pixel
             });
           } catch (err) {
             setPaymentError("Payment done but order failed: " + err.message + ". Please contact support.");
@@ -327,6 +447,15 @@ export default function PublicCheckout() {
   };
 
   const handlePlaceOrder = (e) => {
+    if (addressView !== "summary") {
+      e.preventDefault();
+      alert("Please select or enter a delivery address first.");
+      // Scroll to address section
+      const addrSection = document.querySelector("#address-section");
+      if (addrSection) addrSection.scrollIntoView({ behavior: "smooth" });
+      return;
+    }
+
     if (paymentMethod === "ONLINE" || paymentMethod === "PARTIAL_COD") {
       e.preventDefault();
       handleOnlinePayment();
@@ -349,9 +478,6 @@ export default function PublicCheckout() {
           font-size: 11px !important;
           color: #6366f1 !important;
         }
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
         .spinner {
           width: 20px; height: 20px;
           border: 2px solid rgba(255,255,255,0.3);
@@ -361,6 +487,96 @@ export default function PublicCheckout() {
           display: inline-block;
           vertical-align: middle;
           margin-right: 8px;
+        }
+        /* Address Section Styles */
+        .address-card {
+          border: 1px solid #e2e8f0;
+          border-radius: 16px;
+          padding: 20px;
+          margin-bottom: 16px;
+          position: relative;
+          transition: all 0.2s ease;
+          background: white;
+          cursor: pointer;
+        }
+        .address-card.active {
+          border-color: #000;
+          box-shadow: 0 0 0 1px #000;
+        }
+        .address-card:hover {
+          border-color: #cbd5e1;
+        }
+        .address-card.active:hover {
+          border-color: #000;
+        }
+        .address-badge {
+          background: #eff6ff;
+          color: #2563eb;
+          padding: 2px 8px;
+          border-radius: 4px;
+          font-size: 12px;
+          font-weight: 500;
+          margin-left: 8px;
+        }
+        .deliver-here-btn {
+          width: 100%;
+          background: #000;
+          color: #fff;
+          border: none;
+          padding: 12px;
+          border-radius: 10px;
+          font-weight: 600;
+          margin-top: 16px;
+          cursor: pointer;
+        }
+        .address-summary {
+          border: 1px solid #e2e8f0;
+          border-radius: 12px;
+          padding: 16px;
+          display: flex;
+          align-items: center;
+          gap: 16px;
+          background: white;
+        }
+        .address-summary-icon {
+          width: 40px;
+          height: 40px;
+          border: 1px solid #e2e8f0;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #64748b;
+          font-size: 20px;
+        }
+        .address-summary-content {
+          flex: 1;
+        }
+        .change-btn {
+          border: 1px solid #000;
+          background: white;
+          color: #000;
+          padding: 6px 16px;
+          border-radius: 8px;
+          font-weight: 600;
+          cursor: pointer;
+          font-size: 14px;
+        }
+        .add-address-btn {
+          border: 1px solid #000;
+          background: white;
+          color: #000;
+          padding: 8px 16px;
+          border-radius: 20px;
+          font-weight: 600;
+          cursor: pointer;
+          font-size: 14px;
+        }
+        .section-header-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 20px;
         }
       `}</style>
 
@@ -385,26 +601,119 @@ export default function PublicCheckout() {
                 items.map((i) => ({ variant_id: i.variant_id, quantity: i.quantity, price: i.price }))
               )} />
 
+              {/* Meta Tracking Hidden Fields */}
+              <input type="hidden" name="fbclid" value={fbclid} />
+              <input type="hidden" name="fbp" value={fbp} />
+              <input type="hidden" name="eventId" value={eventIdRef.current} />
+
               {/* ADDRESS SECTION */}
-              <section style={styles.section}>
-                <h2 style={styles.sectionTitle}>
-                  <span style={styles.stepBadge}>1</span> Delivery Address
-                </h2>
-                <div style={styles.row}>
-                  <FloatingInput name="firstName" label="First Name" required />
-                  <FloatingInput name="lastName" label="Last Name" required />
-                </div>
-                <FloatingInput name="email" label="Email Address" type="email" required />
-                <FloatingInput name="phone" label="Phone Number" type="tel" required />
-                <FloatingInput name="address1" label="House / Flat / Street" required />
-                <div style={styles.row}>
-                  <FloatingInput name="city" label="City" required />
-                  <FloatingInput name="zip" label="PIN Code" required />
-                </div>
-                <div style={styles.row}>
-                  <FloatingInput name="state" label="State" required />
-                  <FloatingInput name="country" label="Country" defaultValue="India" required />
-                </div>
+              <section id="address-section" style={styles.section}>
+                {addressView === "summary" && selectedAddress ? (
+                  <>
+                    <h2 style={styles.sectionTitle}>
+                      <span style={styles.stepBadge}>1</span> Delivery Address
+                    </h2>
+                    <AddressSummary
+                      address={selectedAddress}
+                      onChange={() => setAddressView("list")}
+                    />
+                    {/* Hidden fields for Form submission */}
+                    <input type="hidden" name="firstName" value={selectedAddress.firstName} />
+                    <input type="hidden" name="lastName" value={selectedAddress.lastName} />
+                    <input type="hidden" name="email" value={selectedAddress.email} />
+                    <input type="hidden" name="phone" value={selectedAddress.phone} />
+                    <input type="hidden" name="address1" value={selectedAddress.address1} />
+                    <input type="hidden" name="city" value={selectedAddress.city} />
+                    <input type="hidden" name="zip" value={selectedAddress.zip} />
+                    <input type="hidden" name="state" value={selectedAddress.state} />
+                    <input type="hidden" name="country" value={selectedAddress.country || "India"} />
+                  </>
+                ) : addressView === "list" ? (
+                  <>
+                    <div className="section-header-row">
+                      <h2 style={styles.sectionTitle}><span style={styles.stepBadge}>1</span> Select Delivery Address</h2>
+                      <button type="button" className="add-address-btn" onClick={() => setAddressView("form")}>+ Add New Address</button>
+                    </div>
+                    {savedAddresses.map((addr, idx) => (
+                      <AddressCard
+                        key={idx}
+                        address={addr}
+                        isActive={selectedAddressIndex === idx}
+                        onSelect={() => setSelectedAddressIndex(idx)}
+                        onDeliver={() => {
+                          setSelectedAddressIndex(idx);
+                          setAddressView("summary");
+                        }}
+                      />
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    <h2 style={styles.sectionTitle}>
+                      <span style={styles.stepBadge}>1</span> {savedAddresses.length > 0 ? "Add New Address" : "Delivery Address"}
+                    </h2>
+                    <div style={styles.row}>
+                      <FloatingInput name="firstName" label="First Name" required defaultValue={selectedAddress?.firstName} />
+                      <FloatingInput name="lastName" label="Last Name" required defaultValue={selectedAddress?.lastName} />
+                    </div>
+                    <FloatingInput name="email" label="Email Address" type="email" required defaultValue={selectedAddress?.email} />
+                    <FloatingInput name="phone" label="Phone Number" type="tel" required defaultValue={selectedAddress?.phone} />
+                    <FloatingInput name="address1" label="House / Flat / Street" required defaultValue={selectedAddress?.address1} />
+                    <div style={styles.row}>
+                      <FloatingInput name="city" label="City" required defaultValue={selectedAddress?.city} />
+                      <FloatingInput name="zip" label="PIN Code" required defaultValue={selectedAddress?.zip} />
+                    </div>
+                    <div style={styles.row}>
+                      <FloatingInput name="state" label="State" required defaultValue={selectedAddress?.state} />
+                      <FloatingInput name="country" label="Country" defaultValue="India" required />
+                    </div>
+                    {/* Action buttons for form */}
+                    <div style={{ display: "flex", gap: "12px", marginTop: "20px" }}>
+                      <button
+                        type="button"
+                        className="deliver-here-btn"
+                        style={{ margin: 0 }}
+                        onClick={() => {
+                          const form = formRef.current;
+                          if (form.reportValidity()) {
+                            const newAddr = {
+                              firstName: form.firstName.value,
+                              lastName: form.lastName.value,
+                              email: form.email.value,
+                              phone: form.phone.value,
+                              address1: form.address1.value,
+                              city: form.city.value,
+                              zip: form.zip.value,
+                              state: form.state.value,
+                              country: form.country.value,
+                            };
+                            const exists = savedAddresses.findIndex(a => a.address1 === newAddr.address1 && a.city === newAddr.city);
+                            if (exists >= 0) {
+                              setSelectedAddressIndex(exists);
+                            } else {
+                              const updated = [newAddr, ...savedAddresses];
+                              setSavedAddresses(updated);
+                              setSelectedAddressIndex(0);
+                            }
+                            setAddressView("summary");
+                          }
+                        }}
+                      >
+                        Deliver Here
+                      </button>
+                      {savedAddresses.length > 0 && (
+                        <button
+                          type="button"
+                          className="change-btn"
+                          style={{ height: "48px", borderRadius: "10px" }}
+                          onClick={() => setAddressView("list")}
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
               </section>
 
               {/* PAYMENT SECTION */}
@@ -544,6 +853,53 @@ export default function PublicCheckout() {
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
+
+function AddressSummary({ address, onChange }) {
+  if (!address) return null;
+  return (
+    <div className="address-summary">
+      <div className="address-summary-icon">📍</div>
+      <div className="address-summary-content">
+        <div style={{ fontWeight: "700", fontSize: "16px", marginBottom: "4px" }}>
+          Deliver To {address.firstName} {address.lastName}
+        </div>
+        <div style={{ color: "#475569", fontSize: "14px", lineHeight: "1.4" }}>
+          {address.address1}, {address.city}<br />
+          {address.state}, {address.zip}
+        </div>
+        <div style={{ color: "#64748b", fontSize: "13px", marginTop: "4px" }}>
+          {address.phone} | {address.email}
+        </div>
+      </div>
+      <button type="button" onClick={onChange} className="change-btn">Change</button>
+    </div>
+  );
+}
+
+function AddressCard({ address, isActive, onSelect, onDeliver }) {
+  return (
+    <div className={`address-card ${isActive ? "active" : ""}`} onClick={() => onSelect()}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <span style={{ fontWeight: "700", fontSize: "16px" }}>{address.firstName} {address.lastName}</span>
+          <span className="address-badge">Home</span>
+        </div>
+        <div style={{ color: "#64748b", fontSize: "18px" }}>⋮</div>
+      </div>
+      <div style={{ color: "#475569", fontSize: "14px", lineHeight: "1.4", marginBottom: "4px" }}>
+        {address.address1}, {address.city}, {address.state}, {address.zip}
+      </div>
+      <div style={{ color: "#64748b", fontSize: "14px", marginBottom: "12px" }}>
+        {address.email}
+      </div>
+      {isActive && (
+        <button type="button" className="deliver-here-btn" onClick={(e) => { e.stopPropagation(); onDeliver(); }}>
+          Deliver Here
+        </button>
+      )}
+    </div>
+  );
+}
 
 function FloatingInput({ name, label, type = "text", required, defaultValue }) {
   return (
