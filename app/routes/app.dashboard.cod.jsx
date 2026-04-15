@@ -25,7 +25,7 @@ export const action = async ({ request }) => {
 };
 
 export default function CODControls() {
-  const { config, shop } = useRouteLoaderData("routes/app.dashboard");
+  const { config, shop, shopName } = useRouteLoaderData("routes/app.dashboard");
   const submit = useSubmit();
   const [pincodeInput, setPincodeInput] = useState("");
 
@@ -66,6 +66,9 @@ export default function CODControls() {
         <div>
           <h1 style={{ fontSize: '24px', fontWeight: '700' }}>COD controls</h1>
           <p style={{ color: 'var(--text-muted)' }}>Advanced configuration for Cash on Delivery</p>
+        </div>
+        <div className="glass-card" style={{ padding: '8px 16px', fontSize: '14px', fontWeight: '600', color: '#166534', background: '#dcfce7' }}>
+          {shopName}
         </div>
       </header>
 

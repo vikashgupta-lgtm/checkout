@@ -31,7 +31,8 @@ export const action = async ({ request }) => {
 };
 
 export default function PaymentMethods() {
-  const { config, shop } = useRouteLoaderData("routes/app.dashboard");
+  const data = useRouteLoaderData("routes/app.dashboard");
+  const { config, shop, shopName } = data || {};
 
   const [methods, setMethods] = useState(config.payments?.methods || []);
   const [codLabel, setCodLabel] = useState(
@@ -79,11 +80,16 @@ export default function PaymentMethods() {
           <h1 style={{ fontSize: '24px', fontWeight: '700' }}>Payment methods</h1>
           <p style={{ color: 'var(--text-muted)' }}>Manage your available payment options</p>
         </div>
-        {saved && (
-          <div style={{ padding: '8px 16px', background: '#dcfce7', color: '#166534', borderRadius: '8px', fontSize: '14px', fontWeight: '600' }}>
-            ✓ Saved!
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          {saved && (
+            <div style={{ padding: '8px 16px', background: '#dcfce7', color: '#166534', borderRadius: '8px', fontSize: '14px', fontWeight: '600' }}>
+              ✓ Saved!
+            </div>
+          )}
+          <div className="glass-card" style={{ padding: '8px 16px', fontSize: '14px', fontWeight: '600', color: '#166534', background: '#dcfce7' }}>
+            {shopName}
           </div>
-        )}
+        </div>
       </header>
 
       <div className="glass-card" style={{ marginBottom: '32px' }}>

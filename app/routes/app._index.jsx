@@ -73,7 +73,7 @@ export const action = async ({ request }) => {
       `, {
         variables: {
           input: {
-            title: "CheckoutKit Smart Rules",
+            title: "CheckoutPro Smart Rules",
             functionId: activeFunctionId,
             enabled: true,
             metafields: [{

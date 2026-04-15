@@ -25,7 +25,7 @@ export const action = async ({ request }) => {
 };
 
 export default function PartialCOD() {
-  const { config, shop } = useRouteLoaderData("routes/app.dashboard");
+  const { config, shop, shopName } = useRouteLoaderData("routes/app.dashboard");
   const submit = useSubmit();
 
   const partialConfig = config.partialCod;
@@ -60,6 +60,9 @@ export default function PartialCOD() {
         <div>
           <h1 style={{ fontSize: '24px', fontWeight: '700' }}>Partial COD</h1>
           <p style={{ color: 'var(--text-muted)' }}>Configure upfront payment for Cash on Delivery</p>
+        </div>
+        <div className="glass-card" style={{ padding: '8px 16px', fontSize: '14px', fontWeight: '600', color: '#166534', background: '#dcfce7' }}>
+          {shopName}
         </div>
       </header>
 

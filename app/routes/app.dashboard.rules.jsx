@@ -26,6 +26,7 @@ export const action = async ({ request }) => {
 
 export default function CheckoutRules() {
   const data = useRouteLoaderData("routes/app.dashboard");
+  const { config, shop, shopName } = data || {};
   const submit = useSubmit();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -36,11 +37,10 @@ export default function CheckoutRules() {
   const [condVal, setCondVal] = useState("");
   const [ruleAction, setRuleAction] = useState("Hide COD");
 
-  if (!data || !data.config) {
+  if (!data || !config) {
     return <div style={{ padding: '40px', textAlign: 'center' }}>Loading rules configuration...</div>;
   }
 
-  const { config, shop } = data;
   const rules = config.rules || [];
 
   const saveSettings = (newSettings) => {
@@ -85,16 +85,21 @@ export default function CheckoutRules() {
           <h1 style={{ fontSize: '24px', fontWeight: '700' }}>Checkout rules</h1>
           <p style={{ color: 'var(--text-muted)' }}>Conditions that control payment visibility</p>
         </div>
-        <button
-          className="custom-button"
-          onClick={() => {
-            setIsModalOpen(true);
-          }}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', zIndex: 100 }}
-        >
-          <Plus size={18} />
-          Add rule
-        </button>
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          <div className="glass-card" style={{ padding: '8px 16px', fontSize: '14px', fontWeight: '600', color: '#166534', background: '#dcfce7' }}>
+            {shopName}
+          </div>
+          <button
+            className="custom-button"
+            onClick={() => {
+              setIsModalOpen(true);
+            }}
+            style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', zIndex: 100 }}
+          >
+            <Plus size={18} />
+            Add rule
+          </button>
+        </div>
       </header>
       <div className="glass-card" style={{ marginBottom: '32px' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>

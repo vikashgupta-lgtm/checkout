@@ -113,6 +113,8 @@ async function handleVerifyAndCreateShopifyOrder(request) {
     customerDetails,
     cartItems,
     totalAmount,
+    paidAmount,
+    paymentMethod,
     shop,
   } = body;
 
@@ -193,21 +195,21 @@ async function handleVerifyAndCreateShopifyOrder(request) {
           country_code: "IN",
         },
 
-        // Mark as PAID — this bypasses Shopify payment gateway → 0% fee!
-        financial_status: "paid",
+        // Mark as partially paid or paid based on Partial COD status
+        financial_status: paymentMethod === "PARTIAL_COD" ? "partially_paid" : "paid",
 
-        // Payment gateway name shown in Shopify Admin (cosmetic only)
-        gateway: "Razorpay (Custom Checkout)",
+        // Payment gateway name shown in Shopify Admin
+        gateway: paymentMethod === "PARTIAL_COD" ? "Partial COD (Razorpay)" : "Razorpay (Custom Checkout)",
 
         // Order note with Razorpay payment reference
-        note: `Razorpay Payment ID: ${razorpay_payment_id} | Order ID: ${razorpay_order_id}`,
+        note: `Razorpay Payment ID: ${razorpay_payment_id} | Order ID: ${razorpay_order_id}${paymentMethod === "PARTIAL_COD" ? " | Partial COD Advance Paid" : ""}`,
 
         // Transaction record for Shopify admin
         transactions: [
           {
             kind: "sale",
             status: "success",
-            amount: (totalAmount / 100).toFixed(2),
+            amount: (paidAmount / 100).toFixed(2),
             gateway: "Razorpay (Custom Checkout)",
           },
         ],

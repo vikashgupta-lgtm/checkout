@@ -29,11 +29,25 @@ export const loader = async ({ request }) => {
   }
 
   const config = await getAppConfig(shop);
-  return json({ config, shop });
+
+  let shopName = shop.split('.')[0];
+  try {
+    const { authenticate } = await import("../shopify.server");
+    const { admin } = await authenticate.admin(request);
+    const response = await admin.graphql(`{ shop { name } }`);
+    const responseJson = await response.json();
+    if (responseJson.data?.shop?.name) {
+      shopName = responseJson.data.shop.name;
+    }
+  } catch (e) {
+    console.error("Error fetching shop name:", e);
+  }
+
+  return json({ config, shop, shopName });
 };
 
 export default function DashboardLayout() {
-  const { config, shop } = useLoaderData();
+  const { config, shop, shopName } = useLoaderData();
   const location = useLocation();
   const currentPath = location.pathname;
 
@@ -54,9 +68,9 @@ export default function DashboardLayout() {
             <div style={{ background: 'var(--primary)', padding: '6px', borderRadius: '8px', color: 'white' }}>
               <ShieldCheck size={20} />
             </div>
-            CheckoutKit
+            CheckoutPro
           </div>
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>{shop}</div>
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>{shopName}</div>
         </div>
 
         <nav className="db-nav">

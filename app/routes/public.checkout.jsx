@@ -47,9 +47,12 @@ export const loader = async ({ request }) => {
     // Pass Razorpay Key ID to frontend (safe — public key)
     const razorpayKeyId = process.env.RAZORPAY_KEY_ID || "";
 
-    return json({ cart, shop, error: null, razorpayKeyId });
+    const { getAppConfig } = await import("../models/config.server");
+    const config = await getAppConfig(shop);
+
+    return json({ cart, shop, error: null, razorpayKeyId, config });
   } catch (err) {
-    return json({ error: "Failed to decode cart: " + err.message, cart: null, shop });
+    return json({ error: "Failed to decode cart: " + err.message, cart: null, shop, config: null });
   }
 };
 
@@ -158,7 +161,7 @@ export const action = async ({ request }) => {
 // ─── UI ──────────────────────────────────────────────────────────────────────
 
 export default function PublicCheckout() {
-  const { cart, shop, error, razorpayKeyId } = useLoaderData();
+  const { cart, shop, error, razorpayKeyId, config } = useLoaderData();
   const actionData = useActionData();
   const nav = useNavigation();
   const isSubmitting = nav.state === "submitting";
@@ -194,6 +197,15 @@ export default function PublicCheckout() {
     style: "currency", currency: "INR",
   }).format(totalCents / 100);
 
+  const partialCod = config?.partialCod || { enabled: false, minOrder: 0, upfrontPercentage: 20, upfrontLabel: "Pay now", deliveryLabel: "Pay on delivery" };
+  const totalINR = totalCents / 100;
+  const isPartialCodEligible = partialCod.enabled && totalINR >= (partialCod.minOrder || 0);
+  const upfrontAmountCents = Math.round(totalCents * ((partialCod.upfrontPercentage || 0) / 100));
+  const remainingCodCents = Math.max(0, totalCents - upfrontAmountCents);
+
+  const formattedUpfront = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(upfrontAmountCents / 100);
+  const formattedRemaining = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(remainingCodCents / 100);
+
   // ── Razorpay payment handler ─────────────────────────────────────────────
   const handleOnlinePayment = async () => {
     setPaymentError(null);
@@ -221,11 +233,13 @@ export default function PublicCheckout() {
 
     try {
       // ── Step 1: Create Razorpay order on backend ──────────────────────
+      const amountToPay = paymentMethod === "PARTIAL_COD" ? upfrontAmountCents : totalCents;
+
       const createRes = await fetch("/public/razorpay?action=create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          amount: totalCents,   // already in smallest unit
+          amount: amountToPay,   // already in smallest unit
           currency: "INR",     // Force INR — enables UPI, Netbanking, Wallets
           receipt: `cart_${cart.token}`,
         }),
@@ -267,6 +281,8 @@ export default function PublicCheckout() {
                   price: i.price,
                 })),
                 totalAmount: totalCents,
+                paidAmount: amountToPay,
+                paymentMethod: paymentMethod,
                 shop,
               }),
             });
@@ -279,7 +295,7 @@ export default function PublicCheckout() {
             setOrderResult({
               success: true,
               orderId: verifyData.orderName,
-              paymentMethod: "ONLINE",
+              paymentMethod: paymentMethod,
               name: `${firstName} ${lastName}`,
               razorpayPaymentId: verifyData.razorpayPaymentId,
             });
@@ -311,7 +327,7 @@ export default function PublicCheckout() {
   };
 
   const handlePlaceOrder = (e) => {
-    if (paymentMethod === "ONLINE") {
+    if (paymentMethod === "ONLINE" || paymentMethod === "PARTIAL_COD") {
       e.preventDefault();
       handleOnlinePayment();
     }
@@ -351,8 +367,8 @@ export default function PublicCheckout() {
       {/* Header */}
       <header style={styles.header}>
         <div style={styles.headerInner}>
-          <div style={styles.logo}>🛒 SecureCheckout</div>
-          <div style={styles.secureTag}>🔒 SSL Secured · Razorpay Powered</div>
+          <div style={styles.logo}>🛒 CheckoutPro</div>
+          <div style={styles.secureTag}>Powered by Promark.</div>
         </div>
       </header>
 
@@ -407,6 +423,18 @@ export default function PublicCheckout() {
                     selected={paymentMethod === "COD"}
                     onSelect={setPaymentMethod}
                   />
+                  {isPartialCodEligible && (
+                    <PaymentOption
+                      id="partial-cod"
+                      value="PARTIAL_COD"
+                      label="Partial COD (Pay Advance)"
+                      icon="🌗"
+                      description={`${partialCod.upfrontLabel || "Pay now"}: ${formattedUpfront} · ${partialCod.deliveryLabel || "On Delivery"}: ${formattedRemaining}`}
+                      selected={paymentMethod === "PARTIAL_COD"}
+                      onSelect={setPaymentMethod}
+                      badge="Recommended"
+                    />
+                  )}
                   <PaymentOption
                     id="online"
                     value="ONLINE"
@@ -420,7 +448,7 @@ export default function PublicCheckout() {
                 </div>
 
                 {/* Online payment trust badges */}
-                {paymentMethod === "ONLINE" && (
+                {(paymentMethod === "ONLINE" || paymentMethod === "PARTIAL_COD") && (
                   <div style={styles.trustBadges}>
                     <span style={styles.trustBadge}>🔒 256-bit SSL</span>
                     <span style={styles.trustBadge}>✅ Razorpay Secured</span>
@@ -439,7 +467,7 @@ export default function PublicCheckout() {
               {/* PLACE ORDER BUTTON */}
               <button
                 type={paymentMethod === "COD" ? "submit" : "button"}
-                onClick={paymentMethod === "ONLINE" ? handlePlaceOrder : undefined}
+                onClick={(paymentMethod === "ONLINE" || paymentMethod === "PARTIAL_COD") ? handlePlaceOrder : undefined}
                 style={{
                   ...styles.placeOrderBtn,
                   opacity: (isSubmitting || rzpLoading) ? 0.8 : 1,
@@ -452,6 +480,8 @@ export default function PublicCheckout() {
                   <><span className="spinner" />Processing...</>
                 ) : paymentMethod === "ONLINE" ? (
                   `Pay ${formattedTotal} — Securely`
+                ) : paymentMethod === "PARTIAL_COD" ? (
+                  `Pay ${formattedUpfront} to Place Order`
                 ) : (
                   `Place COD Order — ${formattedTotal}`
                 )}
@@ -486,14 +516,14 @@ export default function PublicCheckout() {
                 <span>Shipping</span>
                 <span>FREE</span>
               </div>
-              {paymentMethod === "ONLINE" && (
+              {(paymentMethod === "ONLINE" || paymentMethod === "PARTIAL_COD") && (
                 <div style={{ ...styles.totalRow, color: "#f59e0b" }}>
-                  <span>Payment</span>
-                  <span>Razorpay ✓</span>
+                  <span>{paymentMethod === "PARTIAL_COD" ? "Advance Payment" : "Payment"}</span>
+                  <span>{paymentMethod === "PARTIAL_COD" ? formattedUpfront : "Razorpay ✓"}</span>
                 </div>
               )}
               <div style={styles.divider} />
-              <div style={{ ...styles.totalRow, fontWeight: "700", fontSize: "18px", color: "white" }}>
+              <div style={{ ...styles.totalRow, fontWeight: "700", fontSize: "18px", color: "#111827" }}>
                 <span>Total</span>
                 <span>{formattedTotal}</span>
               </div>
@@ -538,14 +568,16 @@ function PaymentOption({ id, value, label, icon, description, selected, onSelect
       onClick={() => onSelect(value)}
       style={{
         ...styles.paymentOption,
-        border: selected ? "2px solid #6366f1" : "2px solid #334155",
-        background: selected ? "rgba(99,102,241,0.12)" : "rgba(255,255,255,0.03)",
+        border: selected ? "2px solid #6366f1" : "2px solid #e2e8f0",
+        background: selected ? "#eff6ff" : "white",
+        boxShadow: selected ? "0 4px 12px rgba(99,102,241,0.08)" : "none",
       }}
     >
       <div style={{
         width: "20px", height: "20px", borderRadius: "50%", flexShrink: 0,
-        border: selected ? "6px solid #6366f1" : "2px solid #475569",
+        border: selected ? "6px solid #6366f1" : "2px solid #d1d5db",
         transition: "all 0.2s",
+        background: "white"
       }} />
       <div style={{ fontSize: "24px", flexShrink: 0 }}>{icon}</div>
       <div style={{ flex: 1 }}>
@@ -596,19 +628,20 @@ function SuccessScreen({ order }) {
   return (
     <div style={{ ...styles.page, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
       <div style={{
-        background: "rgba(255,255,255,0.05)", borderRadius: "24px",
+        background: "white", borderRadius: "24px",
         padding: "60px 48px", textAlign: "center", maxWidth: "480px", width: "100%",
-        border: "1px solid rgba(255,255,255,0.1)"
+        border: "1px solid #e2e8f0", boxShadow: "0 10px 25px rgba(0,0,0,0.05)"
       }}>
         <div style={{ fontSize: "72px", marginBottom: "16px" }}>{isOnline ? "🎊" : "🎉"}</div>
-        <h1 style={{ color: "white", fontSize: "32px", marginBottom: "8px" }}>Order Placed!</h1>
-        <p style={{ color: "#94a3b8", marginBottom: "24px" }}>
-          Thanks {order.name}! Your order <strong style={{ color: "white" }}>{order.orderId}</strong> has been successfully placed.
+        <h1 style={{ color: "#111827", fontSize: "32px", marginBottom: "8px" }}>Order Placed!</h1>
+        <p style={{ color: "#64748b", marginBottom: "24px" }}>
+          Thanks {order.name}! Your order <strong style={{ color: "#111827" }}>{order.orderId}</strong> has been successfully placed.
         </p>
         <div style={{
-          background: isOnline ? "rgba(34,197,94,0.15)" : "rgba(99,102,241,0.15)",
+          background: isOnline ? "#f0fdf4" : "#eef2ff",
           borderRadius: "12px", padding: "16px", marginBottom: "16px",
-          color: isOnline ? "#86efac" : "#a5b4fc",
+          color: isOnline ? "#166534" : "#3730a3",
+          border: isOnline ? "1px solid #bbf7d0" : "1px solid #c3dafe"
         }}>
           {isOnline ? "✅ Payment Successful via Razorpay" : "💵 Cash on Delivery"}
         </div>
@@ -631,16 +664,16 @@ function ErrorScreen({ message }) {
   return (
     <div style={{ ...styles.page, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
       <div style={{
-        background: "rgba(239,68,68,0.1)", borderRadius: "24px",
+        background: "#fef2f2", borderRadius: "24px",
         padding: "48px", textAlign: "center", maxWidth: "480px",
-        border: "1px solid rgba(239,68,68,0.3)"
+        border: "1px solid #fee2e2"
       }}>
         <div style={{ fontSize: "64px", marginBottom: "16px" }}>⚠️</div>
-        <h2 style={{ color: "#f87171", marginBottom: "8px" }}>Something went wrong</h2>
-        <p style={{ color: "#94a3b8", marginBottom: "24px" }}>{message}</p>
+        <h2 style={{ color: "#991b1b", marginBottom: "8px" }}>Something went wrong</h2>
+        <p style={{ color: "#7f1d1d", marginBottom: "24px" }}>{message}</p>
         <button onClick={() => window.history.back()} style={{
           padding: "12px 28px",
-          background: "#334155", color: "white", borderRadius: "10px",
+          background: "#1e293b", color: "white", borderRadius: "10px",
           border: "none", cursor: "pointer", fontSize: "15px"
         }}>Go Back</button>
       </div>
@@ -652,22 +685,21 @@ function ErrorScreen({ message }) {
 const styles = {
   page: {
     minHeight: "100vh",
-    background: "linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%)",
+    background: "#f8fafc",
     fontFamily: "'Inter', -apple-system, sans-serif",
-    color: "#e2e8f0",
+    color: "#1e293b",
   },
   header: {
-    background: "rgba(15,23,42,0.95)",
-    backdropFilter: "blur(20px)",
-    borderBottom: "1px solid rgba(255,255,255,0.08)",
+    background: "white",
+    borderBottom: "1px solid #e2e8f0",
     position: "sticky", top: 0, zIndex: 100, padding: "0 24px",
   },
   headerInner: {
     maxWidth: "1200px", margin: "0 auto",
     display: "flex", justifyContent: "space-between", alignItems: "center", height: "64px",
   },
-  logo: { fontSize: "22px", fontWeight: "700", color: "white" },
-  secureTag: { color: "#94a3b8", fontSize: "13px" },
+  logo: { fontSize: "22px", fontWeight: "700", color: "#1e293b" },
+  secureTag: { color: "#64748b", fontSize: "13px" },
   main: { padding: "40px 24px 80px" },
   container: {
     maxWidth: "1100px", margin: "0 auto",
@@ -677,12 +709,13 @@ const styles = {
   formCol: {},
   form: { display: "flex", flexDirection: "column", gap: "24px" },
   section: {
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.08)",
+    background: "white",
+    border: "1px solid #e2e8f0",
     borderRadius: "20px", padding: "28px",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
   },
   sectionTitle: {
-    fontSize: "18px", fontWeight: "600", color: "white",
+    fontSize: "18px", fontWeight: "600", color: "#111827",
     marginBottom: "20px", display: "flex", alignItems: "center", gap: "10px",
   },
   stepBadge: {
@@ -696,9 +729,9 @@ const styles = {
   inputGroup: { position: "relative", marginBottom: "16px" },
   input: {
     width: "100%", padding: "22px 16px 8px",
-    background: "rgba(255,255,255,0.06)",
-    border: "1px solid rgba(255,255,255,0.12)",
-    borderRadius: "12px", color: "white",
+    background: "#f9fafb",
+    border: "1px solid #d1d5db",
+    borderRadius: "12px", color: "#111827",
     fontSize: "15px", outline: "none",
     transition: "border-color 0.2s, box-shadow 0.2s",
     fontFamily: "inherit",
@@ -706,7 +739,7 @@ const styles = {
   inputLabel: {
     position: "absolute", top: "50%", left: "16px",
     transform: "translateY(-50%)",
-    color: "#64748b", fontSize: "14px",
+    color: "#6b7280", fontSize: "14px",
     pointerEvents: "none", transition: "all 0.2s",
   },
   paymentOptions: { display: "flex", flexDirection: "column", gap: "12px" },
@@ -715,8 +748,8 @@ const styles = {
     padding: "16px 20px", borderRadius: "14px",
     cursor: "pointer", transition: "all 0.2s",
   },
-  paymentLabel: { fontWeight: "600", color: "white", marginBottom: "2px" },
-  paymentDesc: { fontSize: "13px", color: "#94a3b8" },
+  paymentLabel: { fontWeight: "600", color: "#111827", marginBottom: "2px" },
+  paymentDesc: { fontSize: "13px", color: "#64748b" },
   badge: {
     background: "linear-gradient(135deg, #22c55e, #16a34a)",
     color: "white", borderRadius: "6px",
@@ -727,16 +760,16 @@ const styles = {
     display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "16px",
   },
   trustBadge: {
-    background: "rgba(99,102,241,0.1)",
-    border: "1px solid rgba(99,102,241,0.3)",
+    background: "#f5f3ff",
+    border: "1px solid #ddd6fe",
     borderRadius: "8px", padding: "6px 12px",
-    fontSize: "12px", color: "#a5b4fc",
+    fontSize: "12px", color: "#4f46e5",
   },
   errorBox: {
-    background: "rgba(239,68,68,0.1)",
-    border: "1px solid rgba(239,68,68,0.3)",
+    background: "#fef2f2",
+    border: "1px solid #fee2e2",
     borderRadius: "12px", padding: "14px 18px",
-    color: "#f87171", fontSize: "14px",
+    color: "#b91c1c", fontSize: "14px",
   },
   placeOrderBtn: {
     padding: "18px",
@@ -744,24 +777,25 @@ const styles = {
     color: "white", border: "none", borderRadius: "14px",
     fontSize: "17px", fontWeight: "700", cursor: "pointer",
     transition: "all 0.2s",
-    boxShadow: "0 8px 32px rgba(99,102,241,0.3)",
+    boxShadow: "0 8px 32px rgba(99,102,241,0.25)",
     display: "flex", alignItems: "center", justifyContent: "center",
   },
-  secureNote: { textAlign: "center", color: "rgba(100,116,139,0.8)", fontSize: "13px" },
+  secureNote: { textAlign: "center", color: "#94a3b8", fontSize: "13px" },
   summaryCol: { position: "sticky", top: "84px" },
   summaryCard: {
-    background: "rgba(255,255,255,0.04)",
-    border: "1px solid rgba(255,255,255,0.08)",
+    background: "white",
+    border: "1px solid #e2e8f0",
     borderRadius: "20px", padding: "28px",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
   },
-  summaryTitle: { fontSize: "18px", fontWeight: "700", color: "white", marginBottom: "4px" },
+  summaryTitle: { fontSize: "18px", fontWeight: "700", color: "#111827", marginBottom: "4px" },
   itemList: { display: "flex", flexDirection: "column", gap: "16px", marginBottom: "20px" },
   orderItem: { display: "flex", alignItems: "center", gap: "12px" },
   itemImageWrap: { position: "relative", flexShrink: 0 },
   itemImage: { width: "60px", height: "60px", borderRadius: "10px", objectFit: "cover" },
   itemImageFallback: {
     width: "60px", height: "60px", borderRadius: "10px",
-    background: "#1e293b", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "24px",
+    background: "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "24px",
   },
   qtyBadge: {
     position: "absolute", top: "-6px", right: "-6px",
@@ -771,15 +805,15 @@ const styles = {
     display: "flex", alignItems: "center", justifyContent: "center",
   },
   itemDetails: { flex: 1 },
-  itemTitle: { fontWeight: "600", color: "white", fontSize: "14px", marginBottom: "2px" },
-  itemVariant: { fontSize: "12px", color: "#94a3b8" },
-  itemPrice: { fontWeight: "600", color: "white", whiteSpace: "nowrap" },
-  divider: { height: "1px", background: "rgba(255,255,255,0.08)", margin: "16px 0" },
-  totalRow: { display: "flex", justifyContent: "space-between", color: "#e2e8f0", marginBottom: "8px" },
+  itemTitle: { fontWeight: "600", color: "#111827", fontSize: "14px", marginBottom: "2px" },
+  itemVariant: { fontSize: "12px", color: "#64748b" },
+  itemPrice: { fontWeight: "600", color: "#111827", whiteSpace: "nowrap" },
+  divider: { height: "1px", background: "#e2e8f0", margin: "16px 0" },
+  totalRow: { display: "flex", justifyContent: "space-between", color: "#4b5563", marginBottom: "8px" },
   sealRow: { display: "flex", justifyContent: "space-around", marginTop: "24px" },
   seal: {
     textAlign: "center",
-    color: "#64748b",
+    color: "#94a3b8",
     fontSize: "12px",
   },
 };

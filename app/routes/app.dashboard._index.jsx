@@ -29,7 +29,7 @@ export const action = async ({ request }) => {
 };
 
 export default function DashboardOverview() {
-  const { config, shop } = useRouteLoaderData("routes/app.dashboard");
+  const { config, shop, shopName } = useRouteLoaderData("routes/app.dashboard");
   const submit = useSubmit();
 
   const stats = [
@@ -59,7 +59,7 @@ export default function DashboardOverview() {
         </div>
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
           <div className="glass-card" style={{ padding: '8px 16px', fontSize: '14px', fontWeight: '600', color: '#166534', background: '#dcfce7' }}>
-            {shop}
+            {shopName}
           </div>
           <button style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
             <MoreHorizontal size={20} />

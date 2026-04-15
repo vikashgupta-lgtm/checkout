@@ -80,9 +80,23 @@
       const cartDataEncoded = btoa(unescape(encodeURIComponent(JSON.stringify(cart))));
       const shop = encodeURIComponent(window.__shopifyShop || window.location.hostname);
 
-      // Build the custom checkout URL
-      const checkoutUrl = CUSTOM_CHECKOUT_URL + '?cartData=' + encodeURIComponent(cartDataEncoded) + '&shop=' + shop;
-      window.location.href = checkoutUrl;
+      // Normalize and build the custom checkout URL
+      let baseUrl = CUSTOM_CHECKOUT_URL.trim().replace(/\/+$/, "");
+
+      // Ensure the URL points to the correct endpoint
+      if (!baseUrl.endsWith("/public/checkout")) {
+        if (baseUrl.endsWith("/public")) {
+          baseUrl += "/checkout";
+        } else if (!baseUrl.includes("/public/checkout")) {
+          baseUrl += "/public/checkout";
+        }
+      }
+
+      const url = new URL(baseUrl);
+      url.searchParams.set("cartData", cartDataEncoded);
+      url.searchParams.set("shop", window.__shopifyShop || window.location.hostname);
+
+      window.location.href = url.toString();
     } catch (err) {
       console.error('Checkout interceptor error:', err);
       hideLoadingOverlay();

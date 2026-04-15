@@ -1,8 +1,8 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "066e2d44983dd627cb198185a6f282fd"
+client_id = "e7752ec847a77a94d8cb12cc548a22d8"
 name = "cod-customizer"
-application_url = "https://mysterious-well-sampling-rico.trycloudflare.com"
+application_url = "https://merchants-shapes-actor-theft.trycloudflare.com"
 embedded = true
 
 [webhooks]
@@ -13,9 +13,7 @@ api_version = "2026-07"
 scopes = "read_orders,read_payment_customizations,write_orders,write_payment_customizations,write_products"
 
 [auth]
-redirect_urls = [
-  "https://mysterious-well-sampling-rico.trycloudflare.com/api/auth"
-]
+redirect_urls = [ "https://merchants-shapes-actor-theft.trycloudflare.com/api/auth" ]
 
 [build]
 automatically_update_urls_on_dev = true
