@@ -7,8 +7,10 @@
 (function () {
   'use strict';
 
+  const VERSION = '2.0.1';
   // The URL of your custom checkout. This will be injected by Liquid.
   const CUSTOM_CHECKOUT_URL = window.__customCheckoutUrl || '';
+  console.log(`[Checkout Interceptor v${VERSION}] Custom Checkout URL:`, CUSTOM_CHECKOUT_URL);
 
   // Block form submissions that go to Shopify checkout
   function interceptCheckoutForms() {

@@ -1,0 +1,20 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "372c532cf1a6081c8536c4c77aec8485"
+name = "checkoutpro"
+application_url = "https://example.com"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+include_config_on_deploy = true
+
+[webhooks]
+api_version = "2026-07"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_orders,read_payment_customizations,write_orders,write_payment_customizations,write_products"
+
+[auth]
+redirect_urls = [ "https://example.com/api/auth" ]

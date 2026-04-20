@@ -198,6 +198,7 @@ export default function PublicCheckout() {
   const [rzpLoading, setRzpLoading] = useState(false);
   const [orderResult, setOrderResult] = useState(null);
   const [paymentError, setPaymentError] = useState(null);
+  const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
   const formRef = useRef(null);
 
   // ── Address Selection State ─────────────────────────────────────────────
@@ -296,10 +297,10 @@ export default function PublicCheckout() {
     }
   }, [actionData, orderResult]);
 
-  if (error) return <ErrorScreen message={error} />;
-  if (!cart) return <ErrorScreen message="Cart not found. Please go back and try again." />;
-  if (actionData?.success) return <SuccessScreen order={actionData} />;
-  if (orderResult?.success) return <SuccessScreen order={orderResult} />;
+  if (error) return <ErrorScreen message={error} shop={shop} />;
+  if (!cart) return <ErrorScreen message="Cart not found. Please go back and try again." shop={shop} />;
+  if (actionData?.success) return <SuccessScreen order={actionData} shop={shop} />;
+  if (orderResult?.success) return <SuccessScreen order={orderResult} shop={shop} />;
 
   const items = cart.items || [];
   const totalCents = cart.total_price || 0;
@@ -578,18 +579,101 @@ export default function PublicCheckout() {
           align-items: center;
           margin-bottom: 20px;
         }
+
+        /* Mobile Summary Styles */
+        .mobile-summary-bar {
+          display: none;
+          position: sticky;
+          top: 64px;
+          z-index: 90;
+          background: #f8fafc;
+          border-bottom: 1px solid #e2e8f0;
+          padding: 12px 24px;
+          align-items: center;
+          justify-content: space-between;
+          cursor: pointer;
+        }
+        .mobile-summary-content {
+          overflow: hidden;
+          transition: max-height 0.3s ease-out, padding 0.3s ease;
+          background: white;
+          max-height: 0;
+        }
+        .mobile-summary-content.expanded {
+          max-height: 1000px;
+          padding-bottom: 20px;
+          border-bottom: 1px solid #e2e8f0;
+        }
+
+        @media (max-width: 768px) {
+          .mobile-summary-bar { display: flex; }
+          .desktop-summary { display: none !important; }
+          .checkout-container { 
+            grid-template-columns: 1fr !important; 
+            gap: 20px !important;
+          }
+          .horizontalBadge{
+            zoom:0.7;}
+          button.placeOrderBtn{
+          margin-left: 10px !important;
+          margin-right: 10px !important;}
+          .checkout-main { padding: 0px 0px 80px !important; }
+          .checkout-header { padding: 0 16px !important; }
+          .form-section { border-radius: 0 !important; border-left: none !important; border-right: none !important; }
+        }
       `}</style>
 
       {/* Header */}
-      <header style={styles.header}>
+      <header style={styles.header} className="checkout-header">
         <div style={styles.headerInner}>
           <div style={styles.logo}>🛒 CheckoutPro</div>
           <div style={styles.secureTag}>Powered by Promark.</div>
         </div>
       </header>
 
-      <main style={styles.main}>
-        <div style={styles.container}>
+      {/* MOBILE SUMMARY TOGGLE */}
+      <div className="mobile-summary-bar" onClick={() => setIsSummaryExpanded(!isSummaryExpanded)}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <span style={{ fontSize: "14px", color: "#6366f1", fontWeight: "600" }}>
+            {isSummaryExpanded ? "Hide order summary" : "Show order summary"}
+          </span>
+          <span style={{
+            fontSize: "12px",
+            transform: isSummaryExpanded ? "rotate(180deg)" : "rotate(0deg)",
+            transition: "transform 0.2s"
+          }}>▼</span>
+        </div>
+        <div style={{ fontWeight: "700", fontSize: "16px", color: "#111827" }}>
+          {formattedTotal}
+        </div>
+      </div>
+
+      <div className={`mobile-summary-content ${isSummaryExpanded ? "expanded" : ""}`}>
+        <div style={{ padding: "20px 24px" }}>
+          <div style={styles.itemList}>
+            {items.map((item) => (
+              <OrderItem key={item.id} item={item} currency={currency} />
+            ))}
+          </div>
+          <div style={styles.divider} />
+          <div style={styles.totalRow}>
+            <span>Subtotal</span>
+            <span>{formattedTotal}</span>
+          </div>
+          <div style={{ ...styles.totalRow, color: "#22c55e" }}>
+            <span>Shipping</span>
+            <span>FREE</span>
+          </div>
+          <div style={styles.divider} />
+          <div style={{ ...styles.totalRow, fontWeight: "700", fontSize: "18px", color: "#111827" }}>
+            <span>Total</span>
+            <span>{formattedTotal}</span>
+          </div>
+        </div>
+      </div>
+
+      <main style={styles.main} className="checkout-main">
+        <div style={styles.container} className="checkout-container">
 
           {/* LEFT COLUMN */}
           <div style={styles.formCol}>
@@ -607,7 +691,7 @@ export default function PublicCheckout() {
               <input type="hidden" name="eventId" value={eventIdRef.current} />
 
               {/* ADDRESS SECTION */}
-              <section id="address-section" style={styles.section}>
+              <section id="address-section" style={styles.section} className="form-section">
                 {addressView === "summary" && selectedAddress ? (
                   <>
                     <h2 style={styles.sectionTitle}>
@@ -717,7 +801,7 @@ export default function PublicCheckout() {
               </section>
 
               {/* PAYMENT SECTION */}
-              <section style={styles.section}>
+              <section style={styles.section} className="form-section">
                 <h2 style={styles.sectionTitle}>
                   <span style={styles.stepBadge}>2</span> Payment Method
                 </h2>
@@ -779,10 +863,12 @@ export default function PublicCheckout() {
                 onClick={(paymentMethod === "ONLINE" || paymentMethod === "PARTIAL_COD") ? handlePlaceOrder : undefined}
                 style={{
                   ...styles.placeOrderBtn,
+                  margin: "unset",
                   opacity: (isSubmitting || rzpLoading) ? 0.8 : 1,
                   cursor: (isSubmitting || rzpLoading) ? "not-allowed" : "pointer",
                 }}
                 disabled={isSubmitting || rzpLoading}
+                className="placeOrderBtn"
                 id="place-order-btn"
               >
                 {(isSubmitting || rzpLoading) ? (
@@ -803,7 +889,7 @@ export default function PublicCheckout() {
           </div>
 
           {/* RIGHT COLUMN - Order Summary */}
-          <div style={styles.summaryCol}>
+          <div style={styles.summaryCol} className="desktop-summary">
             <div style={styles.summaryCard}>
               <h2 style={styles.summaryTitle}>Order Summary</h2>
               <p style={{ color: "#94a3b8", fontSize: "14px", marginBottom: "20px" }}>
@@ -848,6 +934,53 @@ export default function PublicCheckout() {
 
         </div>
       </main>
+
+      <footer style={styles.footer}>
+        <div style={styles.poweredByContainer}>
+          <svg style={styles.curvedTextSVG} viewBox="0 0 100 40">
+            <path id="curve" d="M 0 40 Q 50 0 100 40" fill="transparent" />
+            <text style={{ fontSize: '8px', fill: '#94a3b8', fontWeight: '500', letterSpacing: '2px' }}>
+              <textPath href="#curve" startOffset="50%" textAnchor="middle">
+                POWERED BY
+              </textPath>
+            </text>
+          </svg>
+          <img src="/footer_shield.png" alt="Secure" style={styles.footerShield} />
+          <img src="/promark_logo_h.png" alt="Promark" style={styles.promarkLogoH} />
+        </div>
+
+        <div style={styles.horizontalBadges} className="horizontalBadge">
+          <div style={styles.badgeItem}>
+            <img src="/pci_badge.png" alt="PCI DSS" style={styles.badgeIcon} />
+            <div style={styles.badgeText}>
+              <span style={styles.badgeTitle}>PCI DSS</span>
+              <span style={styles.badgeSub}>Certified</span>
+            </div>
+          </div>
+          <div style={styles.badgeItem}>
+            <img src="/secured_badge.png" alt="Secured" style={styles.badgeIcon} />
+            <div style={styles.badgeText}>
+              <span style={styles.badgeTitle}>Secured</span>
+              <span style={styles.badgeSub}>Payments</span>
+            </div>
+          </div>
+          <div style={styles.badgeItem}>
+            <img src="/verified_badge.png" alt="Verified" style={styles.badgeIcon} />
+            <div style={styles.badgeText}>
+              <span style={styles.badgeTitle}>Verified</span>
+              <span style={styles.badgeSub}>Merchant</span>
+            </div>
+          </div>
+        </div>
+
+        <div style={styles.footerId}>26f6ec13</div>
+
+        <div style={styles.footerDisclaimer}>
+          By proceeding, I agree to Promark's{' '}
+          <span style={styles.footerLink}>Privacy Policy</span> and{' '}
+          <span style={styles.footerLink}>T&C</span>
+        </div>
+      </footer>
     </div>
   );
 }
@@ -979,7 +1112,7 @@ function OrderItem({ item, currency }) {
   );
 }
 
-function SuccessScreen({ order }) {
+function SuccessScreen({ order, shop }) {
   const isOnline = order.paymentMethod === "ONLINE";
   return (
     <div style={{ ...styles.page, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
@@ -1006,7 +1139,7 @@ function SuccessScreen({ order }) {
             Payment ID: {order.razorpayPaymentId}
           </p>
         )}
-        <a href="/" style={{
+        <a href={`https://${order.shop || shop}`} style={{
           display: "inline-block", padding: "14px 32px",
           background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
           color: "white", borderRadius: "12px", textDecoration: "none", fontWeight: "600"
@@ -1016,7 +1149,7 @@ function SuccessScreen({ order }) {
   );
 }
 
-function ErrorScreen({ message }) {
+function ErrorScreen({ message, shop }) {
   return (
     <div style={{ ...styles.page, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
       <div style={{
@@ -1027,11 +1160,20 @@ function ErrorScreen({ message }) {
         <div style={{ fontSize: "64px", marginBottom: "16px" }}>⚠️</div>
         <h2 style={{ color: "#991b1b", marginBottom: "8px" }}>Something went wrong</h2>
         <p style={{ color: "#7f1d1d", marginBottom: "24px" }}>{message}</p>
-        <button onClick={() => window.history.back()} style={{
-          padding: "12px 28px",
-          background: "#1e293b", color: "white", borderRadius: "10px",
-          border: "none", cursor: "pointer", fontSize: "15px"
-        }}>Go Back</button>
+        <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
+          <button onClick={() => window.history.back()} style={{
+            padding: "12px 24px",
+            background: "#1e293b", color: "white", borderRadius: "10px",
+            border: "none", cursor: "pointer", fontSize: "15px"
+          }}>Go Back</button>
+          {shop && (
+            <a href={`https://${shop}`} style={{
+              padding: "12px 24px",
+              background: "white", color: "#1e293b", borderRadius: "10px",
+              border: "1px solid #1e293b", textDecoration: "none", fontSize: "15px", fontWeight: "500"
+            }}>Return to Store</a>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1044,6 +1186,7 @@ const styles = {
     background: "#f8fafc",
     fontFamily: "'Inter', -apple-system, sans-serif",
     color: "#1e293b",
+    width: "100%",
   },
   header: {
     background: "white",
@@ -1171,5 +1314,87 @@ const styles = {
     textAlign: "center",
     color: "#94a3b8",
     fontSize: "12px",
+  },
+  footer: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    background: "#f8fafc",
+    width: "100%",
+    paddingBottom: "25px",
+  },
+  poweredByContainer: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+  },
+  curvedTextSVG: {
+    width: "140px",
+    height: "50px",
+    marginBottom: "-20px",
+  },
+  footerShield: {
+    width: "36px",
+    height: "36px",
+    marginBottom: "16px",
+    objectFit: "contain",
+    opacity: "0.8",
+  },
+  promarkLogoH: {
+    height: "62px",
+    width: "185%",
+    objectFit: "cover",
+  },
+  horizontalBadges: {
+    display: "flex",
+    justifyContent: "center",
+    gap: "48px",
+    margin: "48px 0 24px",
+    flexWrap: "wrap",
+  },
+  badgeItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: "14px",
+  },
+  badgeIcon: {
+    width: "48px",
+    height: "48px",
+    objectFit: "contain",
+    opacity: "0.8",
+  },
+  badgeText: {
+    display: "flex",
+    flexDirection: "column",
+    textAlign: "left",
+  },
+  badgeTitle: {
+    fontSize: "15px",
+    fontWeight: "700",
+    color: "#475569",
+    lineHeight: "1.2",
+  },
+  badgeSub: {
+    fontSize: "14px",
+    color: "#94a3b8",
+  },
+  footerId: {
+    fontSize: "13px",
+    color: "#cbd5e1",
+    marginBottom: "12px",
+    fontFamily: "monospace",
+  },
+  footerDisclaimer: {
+    fontSize: "15px",
+    color: "#334155",
+    textAlign: "center",
+    lineHeight: "1.6",
+    maxWidth: "600px",
+  },
+  footerLink: {
+    fontWeight: "700",
+    textDecoration: "underline",
+    color: "#000",
+    cursor: "pointer",
   },
 };
