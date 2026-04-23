@@ -1,0 +1,9 @@
+-- CreateTable
+CREATE TABLE "OtpVerification" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "phone" TEXT NOT NULL,
+    "code" TEXT NOT NULL,
+    "expiresAt" DATETIME NOT NULL,
+    "verified" BOOLEAN NOT NULL DEFAULT false,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

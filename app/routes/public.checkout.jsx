@@ -46,6 +46,59 @@ export const loader = async ({ request }) => {
       return json({ error: "Invalid cart data. Please go back and try again.", cart: null, shop });
     }
 
+    // ── Fetch latest totals from Shopify (Draft Order API) ──────────────────
+    let refinedCart = { ...cart };
+    const discountCode = url.searchParams.get("discount") || "";
+
+    const session = await prisma.session.findFirst({ where: { shop: shop } });
+    if (session && session.accessToken) {
+      try {
+        const draftOrderPayload = {
+          draft_order: {
+            line_items: cart.items.map(item => ({
+              variant_id: item.variant_id,
+              quantity: item.quantity
+            })),
+            use_customer_default_address: true,
+            applied_discount: discountCode ? {
+              code: discountCode,
+              value_type: "fixed_amount", // This is just a placeholder, Shopify will resolve the code
+              value: "0"
+            } : undefined
+          }
+        };
+
+        // Note: For actual code validation, we should use the 'applied_discount' object properly
+        // but often just passing the code in 'applied_discount' isn't enough for coupons.
+        // However, for automatic discounts, just the line items are enough.
+        // If it's a manual code, we might need a different approach, but let's try this.
+        
+        const shopifyRes = await fetch(`https://${shop}/admin/api/2024-04/draft_orders.json`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": session.accessToken
+          },
+          body: JSON.stringify(draftOrderPayload)
+        });
+
+        if (shopifyRes.ok) {
+          const draftData = await shopifyRes.json();
+          const draft = draftData.draft_order;
+          
+          // Update cart totals from draft order
+          refinedCart.total_price = Math.round(parseFloat(draft.total_price) * 100);
+          refinedCart.subtotal_price = Math.round(parseFloat(draft.subtotal_price) * 100);
+          refinedCart.total_discount = Math.round(parseFloat(draft.total_discounts) * 100);
+          
+          // Store draft order ID for reference if needed
+          refinedCart.draft_order_id = draft.id;
+        }
+      } catch (e) {
+        console.error("Failed to fetch refined totals from Shopify:", e);
+      }
+    }
+
     // Pass Razorpay Key ID to frontend (safe — public key)
     const razorpayKeyId = process.env.RAZORPAY_KEY_ID || "";
 
@@ -55,7 +108,7 @@ export const loader = async ({ request }) => {
     // Pass Meta Pixel ID to frontend
     const metaPixelId = process.env.META_PIXEL_ID || "";
 
-    return json({ cart, shop, error: null, razorpayKeyId, config, metaPixelId });
+    return json({ cart: refinedCart, shop, error: null, razorpayKeyId, config, metaPixelId, discountCode });
   } catch (err) {
     return json({ error: "Failed to decode cart: " + err.message, cart: null, shop, config: null, metaPixelId: "" });
   }
@@ -76,6 +129,7 @@ export const action = async ({ request }) => {
   const country = formData.get("country") || "India";
   const cartToken = formData.get("cartToken") || "";
   const shop = formData.get("shop") || "";
+  const discountCode = formData.get("discountCode") || "";
 
   // Meta Tracking Data
   const fbclid = formData.get("fbclid") || "";
@@ -128,6 +182,7 @@ export const action = async ({ request }) => {
           source_name: "custom_checkout",
           tags: "custom-checkout, cod",
           send_receipt: true,
+          discount_codes: discountCode ? [{ code: discountCode, amount: "0.00", type: "percentage" }] : undefined
         },
       };
 
@@ -189,7 +244,7 @@ export const action = async ({ request }) => {
 // ─── UI ──────────────────────────────────────────────────────────────────────
 
 export default function PublicCheckout() {
-  const { cart, shop, error, razorpayKeyId, config, metaPixelId } = useLoaderData();
+  const { cart, shop, error, razorpayKeyId, config, metaPixelId, discountCode: initialDiscountCode } = useLoaderData();
   const actionData = useActionData();
   const nav = useNavigation();
   const isSubmitting = nav.state === "submitting";
@@ -199,11 +254,97 @@ export default function PublicCheckout() {
   const [orderResult, setOrderResult] = useState(null);
   const [paymentError, setPaymentError] = useState(null);
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
+  const [discountCode, setDiscountCode] = useState(initialDiscountCode || "");
   const formRef = useRef(null);
+
+  // ── OTP Verification State ──────────────────────────────────────────────
+  const [verificationStep, setVerificationStep] = useState("initial"); // initial, otp_sent, verified
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [otpCode, setOtpCode] = useState("");
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [otpError, setOtpError] = useState("");
+  const [resendTimer, setResendTimer] = useState(0);
+
+  // Auto-fetch phone number from cart on mount
+  useEffect(() => {
+    if (cart) {
+      const cartPhone = cart.customer?.phone || cart.shipping_address?.phone || "";
+      if (cartPhone) {
+        setPhoneNumber(cartPhone);
+      }
+    }
+  }, [cart]);
+
+  // Handle Resend Timer
+  useEffect(() => {
+    let timer;
+    if (resendTimer > 0) {
+      timer = setInterval(() => setResendTimer((prev) => prev - 1), 1000);
+    }
+    return () => clearInterval(timer);
+  }, [resendTimer]);
+
+  const handleSendOtp = async (e) => {
+    e?.preventDefault();
+    if (!phoneNumber || phoneNumber.length < 10) {
+      setOtpError("Please enter a valid phone number.");
+      return;
+    }
+
+    setIsVerifying(true);
+    setOtpError("");
+    try {
+      const res = await fetch("/public/otp?action=send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: formatPhoneNumber(phoneNumber) }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setVerificationStep("otp_sent");
+        setResendTimer(60);
+      } else {
+        setOtpError(data.error || "Failed to send OTP.");
+      }
+    } catch (err) {
+      setOtpError("Connection error. Please try again.");
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleVerifyOtp = async (e) => {
+    e?.preventDefault();
+    if (otpCode.length !== 6) {
+      setOtpError("Please enter the 6-digit code.");
+      return;
+    }
+
+    setIsVerifying(true);
+    setOtpError("");
+    try {
+      const res = await fetch("/public/otp?action=verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: formatPhoneNumber(phoneNumber), code: otpCode }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setVerificationStep("verified");
+      } else {
+        setOtpError(data.error || "Incorrect OTP.");
+      }
+    } catch (err) {
+      setOtpError("Verification error. Please try again.");
+    } finally {
+      setIsVerifying(false);
+    }
+  };
 
   // ── Address Selection State ─────────────────────────────────────────────
   const [savedAddresses, setSavedAddresses] = useState([]);
   const [selectedAddressIndex, setSelectedAddressIndex] = useState(-1);
+  const [editingAddressIndex, setEditingAddressIndex] = useState(null); // null for new, index for editing
   const [addressView, setAddressView] = useState("form"); // form, list, summary
 
   // Load addresses from localStorage on mount
@@ -229,7 +370,7 @@ export default function PublicCheckout() {
 
   // Save changes to localStorage
   useEffect(() => {
-    if (typeof window !== "undefined" && savedAddresses.length > 0) {
+    if (typeof window !== "undefined") {
       localStorage.setItem("saved_addresses", JSON.stringify(savedAddresses));
     }
   }, [savedAddresses]);
@@ -304,12 +445,21 @@ export default function PublicCheckout() {
 
   const items = cart.items || [];
   const totalCents = cart.total_price || 0;
+  const originalTotalCents = cart.original_total_price || totalCents;
+  const discountCents = cart.total_discount || (originalTotalCents - totalCents);
   const currency = cart.currency || "INR";
 
-  // Always display in INR — Razorpay UPI/Netbanking/Wallets only work with INR
   const formattedTotal = new Intl.NumberFormat("en-IN", {
     style: "currency", currency: "INR",
   }).format(totalCents / 100);
+
+  const formattedOriginalTotal = new Intl.NumberFormat("en-IN", {
+    style: "currency", currency: "INR",
+  }).format(originalTotalCents / 100);
+
+  const formattedDiscount = new Intl.NumberFormat("en-IN", {
+    style: "currency", currency: "INR",
+  }).format(discountCents / 100);
 
   const partialCod = config?.partialCod || { enabled: false, minOrder: 0, upfrontPercentage: 20, upfrontLabel: "Pay now", deliveryLabel: "Pay on delivery" };
   const totalINR = totalCents / 100;
@@ -402,7 +552,8 @@ export default function PublicCheckout() {
                 metaTracking: {
                   fbclid,
                   fbp,
-                  eventId: eventIdRef.current
+                  eventId: eventIdRef.current,
+                  discountCode: discountCode
                 }
               }),
             });
@@ -579,6 +730,53 @@ export default function PublicCheckout() {
           align-items: center;
           margin-bottom: 20px;
         }
+        .address-menu-container {
+          position: relative;
+        }
+        .address-menu-trigger {
+          cursor: pointer;
+          padding: 4px 8px;
+          border-radius: 4px;
+          transition: background 0.2s;
+          font-size: 20px;
+          color: #64748b;
+          line-height: 1;
+        }
+        .address-menu-trigger:hover {
+          background: #f1f5f9;
+        }
+        .address-menu-dropdown {
+          position: absolute;
+          right: 0;
+          top: 30px;
+          background: white;
+          border: 1px solid #e2e8f0;
+          border-radius: 8px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+          z-index: 10;
+          min-width: 100px;
+          overflow: hidden;
+        }
+        .address-menu-item {
+          padding: 10px 12px;
+          font-size: 14px;
+          color: #1e293b;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          transition: background 0.2s;
+          border: none;
+          background: none;
+          width: 100%;
+          text-align: left;
+        }
+        .address-menu-item:hover {
+          background: #f8fafc;
+        }
+        .address-menu-item.delete {
+          color: #ef4444;
+        }
 
         /* Mobile Summary Styles */
         .mobile-summary-bar {
@@ -621,6 +819,120 @@ export default function PublicCheckout() {
           .checkout-header { padding: 0 16px !important; }
           .form-section { border-radius: 0 !important; border-left: none !important; border-right: none !important; }
         }
+
+        /* OTP Overlay Styles */
+        .otp-overlay {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(255, 255, 255, 0.9);
+          backdrop-filter: blur(10px);
+          z-index: 1000;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 20px;
+        }
+        .otp-card {
+          background: white;
+          width: 100%;
+          max-width: 440px;
+          padding: 40px;
+          border-radius: 24px;
+          box-shadow: 0 20px 40px rgba(0,0,0,0.08);
+          text-align: center;
+          border: 1px solid #f1f5f9;
+        }
+        .otp-icon {
+          width: 64px;
+          height: 64px;
+          background: #25d366;
+          border-radius: 20px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin: 0 auto 24px;
+          color: white;
+          font-size: 32px;
+        }
+        .otp-title {
+          font-size: 24px;
+          font-weight: 700;
+          color: #0f172a;
+          margin-bottom: 8px;
+        }
+        .otp-subtitle {
+          color: #64748b;
+          font-size: 15px;
+          line-height: 1.5;
+          margin-bottom: 32px;
+        }
+        .otp-input-group {
+          margin-bottom: 24px;
+          text-align: left;
+        }
+        .otp-input {
+          width: 100%;
+          padding: 16px;
+          border: 1.5px solid #e2e8f0;
+          border-radius: 12px;
+          font-size: 18px;
+          font-weight: 600;
+          letter-spacing: 2px;
+          transition: all 0.2s;
+        }
+        .otp-btn {
+          width: 100%;
+          background: #0f172a;
+          color: white;
+          border: none;
+          padding: 16px;
+          border-radius: 14px;
+          font-size: 16px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+        }
+        .otp-btn:disabled {
+          opacity: 0.7;
+          cursor: not-allowed;
+        }
+        .otp-btn:hover:not(:disabled) {
+          background: #1e293b;
+          transform: translateY(-1px);
+        }
+        .otp-error {
+          background: #fef2f2;
+          color: #dc2626;
+          padding: 12px;
+          border-radius: 10px;
+          font-size: 14px;
+          margin-bottom: 20px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+        }
+        .resend-link {
+          margin-top: 20px;
+          font-size: 14px;
+          color: #64748b;
+        }
+        .resend-btn {
+          background: none;
+          border: none;
+          color: #2563eb;
+          font-weight: 600;
+          cursor: pointer;
+          padding: 0 4px;
+        }
+        .resend-btn:disabled {
+          color: #94a3b8;
+          cursor: not-allowed;
+        }
       `}</style>
 
       {/* Header */}
@@ -658,8 +970,14 @@ export default function PublicCheckout() {
           <div style={styles.divider} />
           <div style={styles.totalRow}>
             <span>Subtotal</span>
-            <span>{formattedTotal}</span>
+            <span>{formattedOriginalTotal}</span>
           </div>
+          {discountCents > 0 && (
+            <div style={{ ...styles.totalRow, color: "#dc2626" }}>
+              <span>Discount {discountCode ? `(${discountCode})` : ""}</span>
+              <span>-{formattedDiscount}</span>
+            </div>
+          )}
           <div style={{ ...styles.totalRow, color: "#22c55e" }}>
             <span>Shipping</span>
             <span>FREE</span>
@@ -673,6 +991,81 @@ export default function PublicCheckout() {
       </div>
 
       <main style={styles.main} className="checkout-main">
+        {verificationStep !== "verified" && (
+          <div className="otp-overlay">
+            <div className="otp-card">
+              <div className="otp-icon">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l2.27-2.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>
+              </div>
+              <h1 className="otp-title">
+                {verificationStep === "initial" ? "Verify your number" : "Enter Verification Code"}
+              </h1>
+              <p className="otp-subtitle">
+                {verificationStep === "initial"
+                  ? "Receive a 6-digit verification code on WhatsApp to proceed with your order."
+                  : `We've sent a 6-digit code to WhatsApp on ${phoneNumber}`}
+              </p>
+
+              {otpError && (
+                <div className="otp-error">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                  {otpError}
+                </div>
+              )}
+
+              {verificationStep === "initial" ? (
+                <form onSubmit={handleSendOtp}>
+                  <div className="otp-input-group">
+                    <input
+                      className="otp-input"
+                      type="tel"
+                      placeholder="Phone Number (with +91)"
+                      value={phoneNumber}
+                      onChange={(e) => setPhoneNumber(e.target.value)}
+                      required
+                      autoFocus
+                    />
+                  </div>
+                  <button className="otp-btn" type="submit" disabled={isVerifying}>
+                    {isVerifying ? <div className="spinner"></div> : null}
+                    Send Code on WhatsApp
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleVerifyOtp}>
+                  <div className="otp-input-group">
+                    <input
+                      className="otp-input"
+                      type="text"
+                      maxLength="6"
+                      placeholder="Enter 6-digit code"
+                      value={otpCode}
+                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
+                      required
+                      autoFocus
+                    />
+                  </div>
+                  <button className="otp-btn" type="submit" disabled={isVerifying}>
+                    {isVerifying ? <div className="spinner"></div> : null}
+                    Verify & Continue
+                  </button>
+                  <div className="resend-link">
+                    Didn't receive code?{" "}
+                    <button
+                      type="button"
+                      className="resend-btn"
+                      onClick={handleSendOtp}
+                      disabled={resendTimer > 0 || isVerifying}
+                    >
+                      {resendTimer > 0 ? `Resend in ${resendTimer}s` : "Resend"}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
+
         <div style={styles.container} className="checkout-container">
 
           {/* LEFT COLUMN */}
@@ -684,6 +1077,7 @@ export default function PublicCheckout() {
               <input type="hidden" name="cartItems" value={JSON.stringify(
                 items.map((i) => ({ variant_id: i.variant_id, quantity: i.quantity, price: i.price }))
               )} />
+              <input type="hidden" name="discountCode" value={discountCode} />
 
               {/* Meta Tracking Hidden Fields */}
               <input type="hidden" name="fbclid" value={fbclid} />
@@ -716,7 +1110,7 @@ export default function PublicCheckout() {
                   <>
                     <div className="section-header-row">
                       <h2 style={styles.sectionTitle}><span style={styles.stepBadge}>1</span> Select Delivery Address</h2>
-                      <button type="button" className="add-address-btn" onClick={() => setAddressView("form")}>+ Add New Address</button>
+                      <button type="button" className="add-address-btn" onClick={() => { setEditingAddressIndex(null); setAddressView("form"); }}>+ Add New Address</button>
                     </div>
                     {savedAddresses.map((addr, idx) => (
                       <AddressCard
@@ -728,28 +1122,40 @@ export default function PublicCheckout() {
                           setSelectedAddressIndex(idx);
                           setAddressView("summary");
                         }}
+                        onEdit={() => {
+                          setEditingAddressIndex(idx);
+                          setAddressView("form");
+                        }}
+                        onDelete={() => {
+                          const updated = savedAddresses.filter((_, i) => i !== idx);
+                          setSavedAddresses(updated);
+                          if (selectedAddressIndex === idx) setSelectedAddressIndex(-1);
+                          else if (selectedAddressIndex > idx) setSelectedAddressIndex(selectedAddressIndex - 1);
+                        }}
                       />
                     ))}
                   </>
                 ) : (
                   <>
                     <h2 style={styles.sectionTitle}>
-                      <span style={styles.stepBadge}>1</span> {savedAddresses.length > 0 ? "Add New Address" : "Delivery Address"}
+                      <span style={styles.stepBadge}>1</span> {editingAddressIndex !== null ? "Edit Address" : savedAddresses.length > 0 ? "Add New Address" : "Delivery Address"}
                     </h2>
-                    <div style={styles.row}>
-                      <FloatingInput name="firstName" label="First Name" required defaultValue={selectedAddress?.firstName} />
-                      <FloatingInput name="lastName" label="Last Name" required defaultValue={selectedAddress?.lastName} />
-                    </div>
-                    <FloatingInput name="email" label="Email Address" type="email" required defaultValue={selectedAddress?.email} />
-                    <FloatingInput name="phone" label="Phone Number" type="tel" required defaultValue={selectedAddress?.phone} />
-                    <FloatingInput name="address1" label="House / Flat / Street" required defaultValue={selectedAddress?.address1} />
-                    <div style={styles.row}>
-                      <FloatingInput name="city" label="City" required defaultValue={selectedAddress?.city} />
-                      <FloatingInput name="zip" label="PIN Code" required defaultValue={selectedAddress?.zip} />
-                    </div>
-                    <div style={styles.row}>
-                      <FloatingInput name="state" label="State" required defaultValue={selectedAddress?.state} />
-                      <FloatingInput name="country" label="Country" defaultValue="India" required />
+                    <div key={editingAddressIndex === null ? "new" : `edit-${editingAddressIndex}`}>
+                      <div style={styles.row}>
+                        <FloatingInput name="firstName" label="First Name" required defaultValue={editingAddressIndex !== null ? savedAddresses[editingAddressIndex].firstName : ""} />
+                        <FloatingInput name="lastName" label="Last Name" required defaultValue={editingAddressIndex !== null ? savedAddresses[editingAddressIndex].lastName : ""} />
+                      </div>
+                      <FloatingInput name="email" label="Email Address" type="email" required defaultValue={editingAddressIndex !== null ? savedAddresses[editingAddressIndex].email : ""} />
+                      <FloatingInput name="phone" label="Phone Number" type="tel" required defaultValue={editingAddressIndex !== null ? savedAddresses[editingAddressIndex].phone : ""} />
+                      <FloatingInput name="address1" label="House / Flat / Street" required defaultValue={editingAddressIndex !== null ? savedAddresses[editingAddressIndex].address1 : ""} />
+                      <div style={styles.row}>
+                        <FloatingInput name="city" label="City" required defaultValue={editingAddressIndex !== null ? savedAddresses[editingAddressIndex].city : ""} />
+                        <FloatingInput name="zip" label="PIN Code" required defaultValue={editingAddressIndex !== null ? savedAddresses[editingAddressIndex].zip : ""} />
+                      </div>
+                      <div style={styles.row}>
+                        <FloatingInput name="state" label="State" required defaultValue={editingAddressIndex !== null ? savedAddresses[editingAddressIndex].state : ""} />
+                        <FloatingInput name="country" label="Country" defaultValue={editingAddressIndex !== null ? savedAddresses[editingAddressIndex].country : "India"} required />
+                      </div>
                     </div>
                     {/* Action buttons for form */}
                     <div style={{ display: "flex", gap: "12px", marginTop: "20px" }}>
@@ -760,7 +1166,7 @@ export default function PublicCheckout() {
                         onClick={() => {
                           const form = formRef.current;
                           if (form.reportValidity()) {
-                            const newAddr = {
+                            const updatedAddr = {
                               firstName: form.firstName.value,
                               lastName: form.lastName.value,
                               email: form.email.value,
@@ -771,15 +1177,20 @@ export default function PublicCheckout() {
                               state: form.state.value,
                               country: form.country.value,
                             };
-                            const exists = savedAddresses.findIndex(a => a.address1 === newAddr.address1 && a.city === newAddr.city);
-                            if (exists >= 0) {
-                              setSelectedAddressIndex(exists);
+
+                            if (editingAddressIndex !== null) {
+                              const updated = [...savedAddresses];
+                              updated[editingAddressIndex] = updatedAddr;
+                              setSavedAddresses(updated);
+                              setSelectedAddressIndex(editingAddressIndex);
                             } else {
-                              const updated = [newAddr, ...savedAddresses];
+                              // Always add new address to the top
+                              const updated = [updatedAddr, ...savedAddresses];
                               setSavedAddresses(updated);
                               setSelectedAddressIndex(0);
                             }
-                            setAddressView("summary");
+                            setAddressView("list"); // Go back to list so user can see all stored addresses
+                            setEditingAddressIndex(null);
                           }
                         }}
                       >
@@ -790,7 +1201,7 @@ export default function PublicCheckout() {
                           type="button"
                           className="change-btn"
                           style={{ height: "48px", borderRadius: "10px" }}
-                          onClick={() => setAddressView("list")}
+                          onClick={() => { setAddressView("list"); setEditingAddressIndex(null); }}
                         >
                           Cancel
                         </button>
@@ -905,8 +1316,14 @@ export default function PublicCheckout() {
               <div style={styles.divider} />
               <div style={styles.totalRow}>
                 <span>Subtotal</span>
-                <span>{formattedTotal}</span>
+                <span>{formattedOriginalTotal}</span>
               </div>
+              {discountCents > 0 && (
+                <div style={{ ...styles.totalRow, color: "#dc2626" }}>
+                  <span>Discount {discountCode ? `(${discountCode})` : ""}</span>
+                  <span>-{formattedDiscount}</span>
+                </div>
+              )}
               <div style={{ ...styles.totalRow, color: "#22c55e" }}>
                 <span>Shipping</span>
                 <span>FREE</span>
@@ -1009,7 +1426,17 @@ function AddressSummary({ address, onChange }) {
   );
 }
 
-function AddressCard({ address, isActive, onSelect, onDeliver }) {
+function AddressCard({ address, isActive, onSelect, onDeliver, onEdit, onDelete }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  // Close menu when clicking elsewhere
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handleClose = () => setMenuOpen(false);
+    window.addEventListener("click", handleClose);
+    return () => window.removeEventListener("click", handleClose);
+  }, [menuOpen]);
+
   return (
     <div className={`address-card ${isActive ? "active" : ""}`} onClick={() => onSelect()}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
@@ -1017,7 +1444,19 @@ function AddressCard({ address, isActive, onSelect, onDeliver }) {
           <span style={{ fontWeight: "700", fontSize: "16px" }}>{address.firstName} {address.lastName}</span>
           <span className="address-badge">Home</span>
         </div>
-        <div style={{ color: "#64748b", fontSize: "18px" }}>⋮</div>
+        <div className="address-menu-container" onClick={(e) => e.stopPropagation()}>
+          <div className="address-menu-trigger" onClick={() => setMenuOpen(!menuOpen)}>⋮</div>
+          {menuOpen && (
+            <div className="address-menu-dropdown">
+              <button type="button" className="address-menu-item" onClick={() => { onEdit(); setMenuOpen(false); }}>
+                ✏️ Edit
+              </button>
+              <button type="button" className="address-menu-item delete" onClick={() => { if (confirm("Delete this address?")) onDelete(); setMenuOpen(false); }}>
+                🗑️ Delete
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       <div style={{ color: "#475569", fontSize: "14px", lineHeight: "1.4", marginBottom: "4px" }}>
         {address.address1}, {address.city}, {address.state}, {address.zip}

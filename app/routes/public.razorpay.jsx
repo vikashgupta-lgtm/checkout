@@ -223,6 +223,7 @@ async function handleVerifyAndCreateShopifyOrder(request) {
         // Source identifier — useful for analytics
         source_name: "custom_checkout",
         tags: "custom-checkout, razorpay, prepaid",
+        discount_codes: body.discountCode ? [{ code: body.discountCode, amount: "0.00", type: "percentage" }] : undefined
       },
     };
 

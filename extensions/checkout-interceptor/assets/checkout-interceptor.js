@@ -98,6 +98,24 @@
       url.searchParams.set("cartData", cartDataEncoded);
       url.searchParams.set("shop", window.__shopifyShop || window.location.hostname);
 
+      // ── Capture Discount Code ──────────────────────────────────────────────
+      // 1. From URL parameter ?discount=CODE
+      const urlParams = new URLSearchParams(window.location.search);
+      let discountCode = urlParams.get("discount");
+
+      // 2. From Shopify's discount_code cookie
+      if (!discountCode) {
+        const getCookie = (name) => {
+          const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+          return match ? match[2] : null;
+        };
+        discountCode = getCookie("discount_code");
+      }
+
+      if (discountCode) {
+        url.searchParams.set("discount", discountCode);
+      }
+
       window.location.href = url.toString();
     } catch (err) {
       console.error('Checkout interceptor error:', err);
